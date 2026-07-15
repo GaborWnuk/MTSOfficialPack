@@ -61,12 +61,6 @@ The Forge jar works unchanged on 1.16.5 through 1.20.1, and the NeoForge jar on
 version. Pushing a `V*` tag runs the release workflow, which builds everything
 and attaches all per-version jars to a GitHub Release.
 
-## About this fork
-
-This is a fork of [DonBruce64/MTSOfficialPack](https://github.com/DonBruce64/MTSOfficialPack)
-that adds the NeoForge build target for Minecraft 1.21.1 / 26.1+ and the
-multi-version release pipeline.
-
 ## Credits
 
 Pack content by the core Immersive Vehicles team: Don Bruce, Limit, Wolfvanox,
@@ -79,6 +73,6 @@ License: All rights reserved.
 
 ---
 
-*This fork is dedicated to my son **Alex** — six years old and already the best
-co-pilot a dad could wish for. May every world you build have something fun to
-fly.* ✈️ 🚗
+*Dedicated to my son **Alex** — six years old and already the best co-pilot
+a dad could wish for. May every world you build have something fun to fly.* ✈️ 🚗
+*— Gabor*
