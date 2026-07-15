@@ -1,0 +1,8 @@
+{
+    "pack": {
+        "description": "Immersive Vehicles Resources",
+        "min_format": [84, 0],
+        "max_format": [101, 1],
+        "_comment": "Formats for Minecraft 26.1.2: resources are 84.0, data is 101.1.  One range has to span both since this jar holds assets and data.  Packaged into the NeoForge jar by PackCompiler; the pack.mcmeta in src/main/resources is the pre-26.1 one."
+    }
+}

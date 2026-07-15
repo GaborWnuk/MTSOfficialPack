@@ -1,4 +1,4 @@
-name: Build Pack (Forge 1.16.5)
+name: Build Pack (Forge 1.16.5 / 1.12.2 / NeoForge 26.1)
 
 on:
   push:
@@ -53,5 +53,25 @@ jobs:
         with:
           name: mts-official-pack-1.12.2
           path: 'build/libs/MTS Official Pack-1.12.2-*.jar'
+          if-no-files-found: error
+
+      # The NeoForge (Minecraft 26.1+) build compiles its loader class against
+      # NeoForge FML, whose class files are Java 25 format, so switch JDKs.
+      # PackCompiler itself is Java 8 format and runs fine on the newer JVM.
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Build NeoForge 26.1 mod jar
+        shell: bash
+        run: java PackCompiler 26
+
+      - name: Upload NeoForge artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mts-official-pack-neoforge-26.1
+          path: 'build/libs/MTS Official Pack-neoforge-*.jar'
           if-no-files-found: error
 

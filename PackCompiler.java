@@ -3,10 +3,18 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
@@ -14,6 +22,14 @@ import java.util.zip.ZipOutputStream;
 
 public class PackCompiler {
     private static final String BASE_COMPILED_FILE = "package packID;\r\n" + "import net.minecraftforge.fml.common.Mod;\r\n" + "@Mod(\"packID\")\r\n" + "public class ForgePackLoader {public ForgePackLoader() {}}";
+
+    //NeoForge (Minecraft 26.1+) equivalent of the compiled loader file.  Same dummy-mod trick, new annotation package.
+    private static final String BASE_NEO_COMPILED_FILE = "package packID;\r\n" + "import net.neoforged.fml.common.Mod;\r\n" + "@Mod(\"packID\")\r\n" + "public class NeoForgePackLoader {public NeoForgePackLoader() {}}";
+    //FML version to compile the NeoForge loader class against.  This is the FML that ships with NeoForge 26.1.2.x.
+    private static final String NEOFORGE_FML_VERSION = "11.0.15";
+    private static final String NEOFORGE_FML_MAVEN_URL = "https://maven.neoforged.net/releases/net/neoforged/fancymodloader/loader/" + NEOFORGE_FML_VERSION + "/loader-" + NEOFORGE_FML_VERSION + ".jar";
+    //FML class files are Java 25 format, so javac needs to be at least that version to read them.
+    private static final int NEOFORGE_JAVAC_VERSION = 25;
     private static int killedDSStores = 0;
 
     public static void main(String[] args) {
@@ -21,15 +37,20 @@ public class PackCompiler {
             // Parse mode flags
             boolean build116 = true;  // Build Forge 1.16.5 jar via Gradle
             boolean build112 = true;  // Build legacy assets-only jar for 1.12.2
+            boolean buildNeo = false; // Build NeoForge jar for MC 26.1+ (requires a Java 25+ JDK, so not on by default)
             if (args != null && args.length > 0) {
                 String mode = String.join(" ", args).toLowerCase();
-                // If a specific target is requested, disable the other
+                // If a specific target is requested, disable the others
                 if (mode.contains("116")) {
                     build116 = true;
                     build112 = false;
                 } else if (mode.contains("112")) {
                     build116 = false;
                     build112 = true;
+                } else if (mode.contains("neo") || mode.contains("26")) {
+                    build116 = false;
+                    build112 = false;
+                    buildNeo = true;
                 }
             }
 
@@ -162,9 +183,97 @@ public class PackCompiler {
                 pack.close();
             }
 
+            if (buildNeo) {
+                System.out.println("Creating NeoForge (Minecraft 26.1+) pack jar.");
+                if (packIDs.isEmpty()) {
+                    System.out.println("No packs found to compile, aborting NeoForge build.");
+                    return;
+                }
+
+                //The dummy @Mod class has to be compiled against the real NeoForge FML jar, and that
+                //jar's class files are Java 25 format, so javac must be at least that version to read them.
+                String javacCommand = findJavacCommand();
+                int javacVersion = getJavacMajorVersion(javacCommand);
+                if (javacVersion < NEOFORGE_JAVAC_VERSION) {
+                    System.out.println("The NeoForge build needs a JDK " + NEOFORGE_JAVAC_VERSION + " or newer compiler, but " + (javacVersion > 0 ? "only found version " + javacVersion : "none was found") + ".");
+                    System.out.println("Install a Java " + NEOFORGE_JAVAC_VERSION + "+ JDK and put it first on your PATH (or point JAVA_HOME at it), then re-run this script.");
+                    return;
+                }
+
+                //Get the FML jar to compile against.  Download and cache it on first use.
+                File fmlJar = new File(currentDir, "build/neoforge/loader-" + NEOFORGE_FML_VERSION + ".jar");
+                if (!fmlJar.exists()) {
+                    System.out.println("Downloading NeoForge FML " + NEOFORGE_FML_VERSION + " to compile against.");
+                    downloadFile(NEOFORGE_FML_MAVEN_URL, fmlJar);
+                }
+
+                //Write out and compile the NeoForge loader class for every pack.
+                //These go to the build folder rather than src as they aren't part of the Forge source set.
+                File neoSourceDir = new File(currentDir, "build/neoforge/java");
+                File neoClassesDir = new File(currentDir, "build/neoforge/classes");
+                List<String> javacArguments = new ArrayList<>();
+                javacArguments.add(javacCommand);
+                javacArguments.add("--release");
+                javacArguments.add("8");
+                javacArguments.add("-Xlint:-options");
+                javacArguments.add("-cp");
+                javacArguments.add(fmlJar.getAbsolutePath());
+                javacArguments.add("-d");
+                javacArguments.add(neoClassesDir.getAbsolutePath());
+                for (String packID : packIDs) {
+                    File neoSourceFile = new File(neoSourceDir, packID + "/NeoForgePackLoader.java");
+                    neoSourceFile.getParentFile().mkdirs();
+                    String data = BASE_NEO_COMPILED_FILE.replace("packID", packID);
+                    BufferedWriter fileOutput = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(neoSourceFile)));
+                    fileOutput.write(data);
+                    fileOutput.close();
+                    javacArguments.add(neoSourceFile.getAbsolutePath());
+                }
+                String javacOutput = runProcess(javacArguments);
+                if (!javacOutput.trim().isEmpty()) {
+                    System.out.println(javacOutput);
+                }
+                for (String packID : packIDs) {
+                    if (!new File(neoClassesDir, packID + "/NeoForgePackLoader.class").exists()) {
+                        System.out.println("Compilation of the NeoForge loader class for pack " + packID + " failed, aborting NeoForge build.");
+                        return;
+                    }
+                }
+
+                //Now assemble the jar: manifest, NeoForge metadata, shared assets/data, and the compiled loader classes.
+                if (!libsDir.exists()) {
+                    libsDir.mkdirs();
+                }
+                //Strip any leading non-digits from the version, as FML requires versions to start with a number.
+                String neoPackVersion = packVersion.replaceFirst("^[^0-9]+", "");
+                if (neoPackVersion.isEmpty()) {
+                    neoPackVersion = "0";
+                }
+                File neoJarFile = new File(libsDir, baseName + "-neoforge-" + packVersion + ".jar");
+                ZipOutputStream pack = new ZipOutputStream(new FileOutputStream(neoJarFile));
+                //A stable module name stops JPMS from deriving one from the spaced jar file name.
+                String moduleID = new TreeSet<>(packIDs).first();
+                addBytesToZip(("Manifest-Version: 1.0\r\nAutomatic-Module-Name: " + moduleID + "\r\n\r\n").getBytes(StandardCharsets.UTF_8), "META-INF/MANIFEST.MF", pack);
+                String neoModsToml = new String(Files.readAllBytes(new File(currentDir, "neoforge/neoforge.mods.toml").toPath()), StandardCharsets.UTF_8);
+                addBytesToZip(neoModsToml.replace("${packVersion}", neoPackVersion).getBytes(StandardCharsets.UTF_8), "META-INF/neoforge.mods.toml", pack);
+                addBytesToZip(Files.readAllBytes(new File(currentDir, "neoforge/pack.mcmeta").toPath()), "pack.mcmeta", pack);
+                addBytesToZip(Files.readAllBytes(new File(currentDir, "src/main/resources/vingette.png").toPath()), "vingette.png", pack);
+                addToZip(packAssetRootDir, pack, packAssetRootDir.getAbsolutePath().length() - "assets".length());
+                File packDataRootDir = new File(currentDir, "src/main/resources/data");
+                if (packDataRootDir.exists()) {
+                    addToZip(packDataRootDir, pack, packDataRootDir.getAbsolutePath().length() - "data".length());
+                }
+                for (String packID : packIDs) {
+                    addBytesToZip(Files.readAllBytes(new File(neoClassesDir, packID + "/NeoForgePackLoader.class").toPath()), packID + "/NeoForgePackLoader.class", pack);
+                }
+                pack.close();
+                System.out.println("Named NeoForge jar: " + neoJarFile.getName());
+            }
+
             System.out.println("Your pack is located in " + libsDir.getAbsolutePath().toString());
             System.out.println("If you haven't already, please edit the mods.toml file, located in " + (new File(currentDir, "src/main/resources/META-INF").getAbsolutePath()));
-            System.out.println("This parser cannot edit or know all the various things in that file, so you must edit it before running this script.");
+            System.out.println("For NeoForge builds the equivalent file is neoforge.mods.toml, located in " + (new File(currentDir, "neoforge").getAbsolutePath()));
+            System.out.println("This parser cannot edit or know all the various things in those files, so you must edit them before running this script.");
         } catch (Exception e) {
             System.out.println("Build failed!");
             e.printStackTrace();
@@ -220,7 +329,78 @@ public class PackCompiler {
             throw e;
         }
     }
-    
+
+    /**Runs a command given as an argument list rather than a single string.  Unlike
+     * {@link #runCommand(String)} this handles paths with spaces in them, and it
+     * waits for all output rather than only what is buffered when the process exits.*/
+    private static String runProcess(List<String> command) throws Exception {
+        ProcessBuilder builder = new ProcessBuilder(command);
+        builder.redirectErrorStream(true);
+        Process process = builder.start();
+        BufferedReader output = new BufferedReader(new InputStreamReader(process.getInputStream(), "UTF-8"));
+        StringBuilder result = new StringBuilder();
+        String line;
+        while ((line = output.readLine()) != null) {
+            result.append(line).append("\n");
+        }
+        process.waitFor();
+        return result.toString();
+    }
+
+    /**Returns the javac to use: the one in JAVA_HOME if that's set and has one, otherwise the one on the PATH.*/
+    private static String findJavacCommand() {
+        String javaHome = System.getenv("JAVA_HOME");
+        if (javaHome != null && !javaHome.isEmpty()) {
+            boolean onWindows = System.getProperty("os.name").toLowerCase().startsWith("windows");
+            File javacFile = new File(javaHome, onWindows ? "bin/javac.exe" : "bin/javac");
+            if (javacFile.exists()) {
+                return javacFile.getAbsolutePath();
+            }
+        }
+        return "javac";
+    }
+
+    /**Returns the major version of the passed-in javac, or -1 if it couldn't be run.
+     * Handles both old (javac 1.8.0_402) and new (javac 25.0.3) version formats.*/
+    private static int getJavacMajorVersion(String javacCommand) {
+        try {
+            List<String> command = new ArrayList<>();
+            command.add(javacCommand);
+            command.add("-version");
+            String result = runProcess(command).trim();
+            Matcher matcher = Pattern.compile("javac\\s+(\\d+)(?:\\.(\\d+))?").matcher(result);
+            if (matcher.find()) {
+                int major = Integer.parseInt(matcher.group(1));
+                if (major == 1 && matcher.group(2) != null) {
+                    return Integer.parseInt(matcher.group(2));
+                }
+                return major;
+            }
+        } catch (Exception ignored) {}
+        return -1;
+    }
+
+    private static void downloadFile(String url, File destinationFile) throws Exception {
+        destinationFile.getParentFile().mkdirs();
+        //Download to a temp file first so an interrupted download can't leave a
+        //partial file behind that later runs would mistake for the real thing.
+        File tempFile = new File(destinationFile.getParentFile(), destinationFile.getName() + ".part");
+        InputStream stream = new URL(url).openStream();
+        try {
+            Files.copy(stream, tempFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            stream.close();
+        }
+        Files.move(tempFile.toPath(), destinationFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    private static void addBytesToZip(byte[] bytes, String entryName, ZipOutputStream pack) throws Exception {
+        ZipEntry entry = new ZipEntry(entryName);
+        pack.putNextEntry(entry);
+        pack.write(bytes);
+        pack.closeEntry();
+    }
+
     private static void addToZip(File directory, ZipOutputStream pack, int directoryLength) throws Exception {
         for (File file : directory.listFiles()) {
             try {
