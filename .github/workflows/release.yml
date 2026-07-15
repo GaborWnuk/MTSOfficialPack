@@ -1,0 +1,115 @@
+name: Release Pack
+
+# Builds the pack for every supported Minecraft version and attaches the jars
+# to a GitHub Release. Triggered by pushing a version tag (e.g. V25 or v25.1).
+# Can also be run manually to produce the same files as workflow artifacts
+# without creating a release.
+
+on:
+  push:
+    tags:
+      - 'V*'
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 8 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+          cache: gradle
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Ensure Gradle wrapper is executable
+        shell: bash
+        run: chmod +x ./gradlew
+
+      - name: Compile PackCompiler helper
+        shell: bash
+        run: javac PackCompiler.java
+
+      - name: Build 1.16.5 mod jar
+        shell: bash
+        run: java PackCompiler 116
+
+      - name: Build 1.12.2 assets jar
+        shell: bash
+        run: java PackCompiler 112
+
+      # The NeoForge (Minecraft 26.1+) build compiles its loader class against
+      # NeoForge FML, whose class files are Java 25 format, so switch JDKs.
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Build NeoForge mod jar
+        shell: bash
+        run: java PackCompiler 26
+
+      # One file per supported Minecraft version, named the same way the pack
+      # is published on CurseForge. The Forge jar is version-independent
+      # (loaderVersion [36,) spans FML 36-46), so 1.18.2/1.19.2/1.20.1 are
+      # copies of the 1.16.5 build. The NeoForge jar covers 1.21.1 and 26.1+,
+      # so those two are copies of the NeoForge build.
+      - name: Assemble per-version release files
+        shell: bash
+        run: |
+          cd build/libs
+          PACK_VERSION=$(ls MTS\ Official\ Pack-1.16.5-*.jar | sed -E 's/.*-1\.16\.5-(.*)\.jar/\1/')
+          echo "Pack version: $PACK_VERSION"
+          mkdir -p release
+          cp "MTS Official Pack-1.12.2-$PACK_VERSION.jar"   release/
+          cp "MTS Official Pack-1.16.5-$PACK_VERSION.jar"   release/
+          for MC in 1.18.2 1.19.2 1.20.1; do
+            cp "MTS Official Pack-1.16.5-$PACK_VERSION.jar" "release/MTS Official Pack-$MC-$PACK_VERSION.jar"
+          done
+          for MC in 1.21.1 26.1.2; do
+            cp "MTS Official Pack-neoforge-$PACK_VERSION.jar" "release/MTS Official Pack-$MC-$PACK_VERSION.jar"
+          done
+          ls -la release/
+
+      - name: Upload release files as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mts-official-pack-all-versions
+          path: 'build/libs/release/*.jar'
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          files: 'build/libs/release/*.jar'
+          fail_on_unmatched_files: true
+          body: |
+            Official Content Pack for Immersive Vehicles (MTS/IV).
+
+            | Minecraft | Loader | File |
+            | --- | --- | --- |
+            | 1.12.2 | Forge | `MTS Official Pack-1.12.2-*.jar` |
+            | 1.16.5 | Forge | `MTS Official Pack-1.16.5-*.jar` |
+            | 1.18.2 | Forge | `MTS Official Pack-1.18.2-*.jar` |
+            | 1.19.2 | Forge | `MTS Official Pack-1.19.2-*.jar` |
+            | 1.20.1 | Forge | `MTS Official Pack-1.20.1-*.jar` |
+            | 1.21.1 | NeoForge | `MTS Official Pack-1.21.1-*.jar` |
+            | 26.1.2+ | NeoForge | `MTS Official Pack-26.1.2-*.jar` |
+
+            The Forge files for 1.16.5 through 1.20.1 share the same contents, as do the
+            NeoForge files for 1.21.1 and 26.1.2 — pick the one matching your game version.
+            Requires the [Immersive Vehicles](https://www.curseforge.com/minecraft/mc-mods/minecraft-transport-simulator) mod.
