@@ -122,7 +122,10 @@ public class PackCompiler {
 
             if (build116) {
                 System.out.println("All files checked, compiling 1.16.5.");
-                result = runCommand(onWindows ? "gradlew.bat build" : "./gradlew build");
+                //Run the wrapper through cmd with an explicit .\ prefix on Windows: modern Java versions
+                //and systems with NoDefaultCurrentDirectoryInExePath set no longer resolve bare .bat
+                //names against the working directory, so a direct call can't find the wrapper.
+                result = runCommand(onWindows ? "cmd /c .\\gradlew.bat build" : "./gradlew build");
 
                 //Re-name compiled file, we know there will only be one, but not what it's called.
                 if (libsDir.exists()) {
@@ -140,6 +143,10 @@ public class PackCompiler {
                             File newName = new File(libsDir, baseName + "-1.16.5-" + packVersion + ".jar");
                             target.renameTo(newName);
                             System.out.println("Named 1.16.5 jar: " + newName.getName());
+                        } else {
+                            //No jar means the Gradle build failed, so show its output to say why.
+                            System.out.println(result);
+                            System.out.println("The 1.16.5 Gradle build did not produce a jar, see output above.");
                         }
                     }
                 }
